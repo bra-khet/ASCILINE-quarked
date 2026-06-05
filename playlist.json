@@ -1,3 +1,7 @@
+### Playlist Format (`playlist.json`)
+Each entry can override the global defaults.
+
+```json
 [
     {
         "video": "first_video.mp4",
