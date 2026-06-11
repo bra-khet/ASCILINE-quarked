@@ -119,17 +119,26 @@ def build_queue(args) -> list[dict]:
             item.setdefault("mode", args.mode)
             item.setdefault("vol",  args.vol)
             item.setdefault("pixel", args.pixel)
+            
+            is_pixel = item.get("pixel", False)
+            default_cols = args.cols if args.cols is not None else (450 if is_pixel else 200)
+            item.setdefault("cols", default_cols)
+            item.setdefault("rows", args.rows)
         return items
 
     if args.folder:
         print(f"[FOLDER] Scanning: {args.folder}")
         items = load_folder(args.folder, args.mode, args.vol)
+        default_cols = args.cols if args.cols is not None else (450 if args.pixel else 200)
         for item in items:
             item["pixel"] = args.pixel
+            item["cols"] = default_cols
+            item["rows"] = args.rows
         return items
 
     # Legacy: single video argument
-    return [{"video": resolve_video_path(args.video), "mode": args.mode, "vol": args.vol, "pixel": args.pixel}]
+    default_cols = args.cols if args.cols is not None else (450 if args.pixel else 200)
+    return [{"video": resolve_video_path(args.video), "mode": args.mode, "vol": args.vol, "pixel": args.pixel, "cols": default_cols, "rows": args.rows}]
 
 
 # ── APP STATE ──────────────────────────────────────────────
@@ -217,8 +226,6 @@ async def websocket_endpoint(websocket: WebSocket):
 
     queue = getattr(app.state, "queue", [])
     loop  = getattr(app.state, "loop", False)
-    cols      = getattr(app.state, "cols", 200)
-    rows_cfg  = getattr(app.state, "rows", 0)  # 0 = auto
 
     if not queue:
         await websocket.send_text("Error: No video in queue!")
@@ -233,6 +240,8 @@ async def websocket_endpoint(websocket: WebSocket):
             video_path = entry["video"]
             render_mode= entry["mode"]
             pixel_mode = entry.get("pixel", False)
+            cols       = entry.get("cols", 200)
+            rows_cfg   = entry.get("rows", 0)
 
             # IMPORTANT: Update current_index BEFORE sending INIT so that
             # when the client reloads /audio in response to INIT, the endpoint
@@ -432,9 +441,12 @@ def print_status():
     if queue and idx < len(queue):
         entry = queue[idx]
         px = ' \033[35m[PIXEL]\033[0m' if entry.get('pixel') else ''
+        cols = entry.get('cols', cols)
+        rows = entry.get('rows', rows)
         print(f" \033[32m▶\033[0m \033[1mVideo\033[0m      : \033[36m{entry['video']}\033[0m")
         print(f" \033[32m▶\033[0m \033[1mSettings\033[0m   : mode={entry['mode']}{px} vol={entry['vol']}")
-    print(f" \033[32m▶\033[0m \033[1mResolution\033[0m : {cols}x{rows}")
+    res_str = f"{cols}x{rows}" if rows > 0 else f"{cols}x(auto)"
+    print(f" \033[32m▶\033[0m \033[1mResolution\033[0m : {res_str}")
     print(f" \033[32m▶\033[0m \033[1mLoop\033[0m       : {'ON' if loop else 'OFF'}")
     print(f"\033[1;37m{'═'*55}\033[0m\n")
 
@@ -507,7 +519,7 @@ if __name__ == "__main__":
         action="store_true", default=False,
         help="Pixel mode: replaces ASCII characters with colored blocks (combine with --mode 2-5)"
     )
-    render.add_argument("--cols", type=int, default=200, help="Grid columns (default: 200)")
+    render.add_argument("--cols", type=int, default=None, help="Grid columns (default: 200 for text, 450 for pixel)")
     render.add_argument("--rows", type=int, default=0,   help="Grid rows    (default: auto from video aspect ratio)")
 
     # ── Playback ──
@@ -541,7 +553,8 @@ if __name__ == "__main__":
     app.state.queue         = queue
     app.state.current_index = 0
     app.state.loop          = args.loop
-    app.state.cols          = args.cols
+    global_default_cols     = args.cols if args.cols is not None else (450 if args.pixel else 200)
+    app.state.cols          = global_default_cols
     app.state.rows          = args.rows
 
     # ── High FPS Warning ──
@@ -576,7 +589,7 @@ if __name__ == "__main__":
     print(f"\033[1;37m{'═'*55}\033[0m")
     print(f" \033[32m▶\033[0m \033[1mQueue\033[0m     : {len(queue)} video(s)")
     print(f" \033[32m▶\033[0m \033[1mLoop\033[0m      : {'ON' if args.loop else 'OFF'}")
-    res_str = f"{args.cols}x{args.rows}" if args.rows > 0 else f"{args.cols}x(auto)"
+    res_str = f"{global_default_cols}x{args.rows}" if args.rows > 0 else f"{global_default_cols}x(auto)"
     print(f" \033[32m▶\033[0m \033[1mResolution\033[0m: {res_str}")
     print(f" \033[32m▶\033[0m \033[1mDefault\033[0m   : mode={args.mode} | pixel={'ON' if args.pixel else 'OFF'} | vol={args.vol}")
     print(f"\033[1;37m{'─'*55}\033[0m")
