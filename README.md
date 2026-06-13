@@ -66,6 +66,9 @@ the viewer already sees (the character plane stays exact), cutting the hard
 cases a further ~15–30% at imperceptible quality. Default is `lossless`
 (bit-exact).
 
+**Monitor Bandwidth in Real-Time:**
+You can append the `--debug` flag when launching the server to see live bandwidth comparisons (RAW vs WIRE bytes) and the exact compression ratio in your terminal. This is highly useful for measuring the real-time savings of the adaptive codec on your specific video sources.
+
 > Verified two independent ways, both **bit-exact**: Python-encoded vectors
 > decoded by `codec.js` in Node (`experiments/gen_vectors.py` →
 > `experiments/check_vectors.js`), and a live `adaptive`-vs-`legacy` WebSocket
