@@ -1,5 +1,11 @@
 # 🌌 ASCILINE Engine
 
+<!-- CHANGED: Added personal fork header + pointer to HOWTO.md
+     WHY: First sprint to convert the raw upstream fork into an AI-first personal workspace for understanding, experimentation, and application building (per user request). This is the canonical on-ramp now. -->
+
+**This is a personal fork (ASCILINE-quarked) for individual exploration, application research, and AI-assisted development.**  
+See **[HOWTO.md](./HOWTO.md)** for a complete plain-language tutorial that explains every part of the system, answers practical questions about GitHub Pages / distribution / pipelines / LLMs, and contains a zero-assumptions beginner walkthrough (Windows/PowerShell focused).
+
 **ASCILINE** is a high-performance, cross-platform real-time ASCII video rendering engine. **Our core objective is to transform the web into a highly dynamic and interactive typographic canvas.** By mapping pixels to text-based representations, we unlock new possibilities for web media delivery.
 
 | Output | Details |
