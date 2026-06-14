@@ -165,6 +165,7 @@ function connectWebSocket() {
                 frameInterval = 1000 / targetFps;
                 renderMode = parseInt(p[2]);
                 pixelMode = (p.length > 5 && parseInt(p[5]) === 1);
+                const currentQueueIndex = (p.length > 6) ? parseInt(p[6]) : null;
                 buildCanvas(parseInt(p[3]), parseInt(p[4]));
 
                 // Initialize adaptive codec decoder (pixel=3 bytes, ASCII color=4 bytes)
@@ -190,7 +191,8 @@ function connectWebSocket() {
 
                 if (audioEl) {
                     audioEl.pause();
-                    audioEl.src = '/audio?' + Date.now();
+                    const qs = currentQueueIndex !== null ? `?v=${currentQueueIndex}&` : '?';
+                    audioEl.src = `/audio${qs}t=${Date.now()}`;
                     audioEl.volume = volumeSlider ? volumeSlider.value : 1.0;
                     audioEl.load();
                     audioEl.play().catch(() => {});

@@ -16,10 +16,11 @@ import json
 import numpy as np
 import cv2
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 import os
+from urllib.parse import urlparse
 from websockets.exceptions import ConnectionClosed
 
 # Import the existing engine (ascii_video_player2.py)
@@ -52,9 +53,17 @@ def calc_auto_rows(cols: int, vid_w: int, vid_h: int, pixel_mode: bool) -> int:
     else:
         return max(1, round(cols / ratio / 2))
 
-# Serve static files (style.css, app.js) from the project directory
+# Serve only whitelisted static files (security: prevents directory traversal)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-app.mount("/static", StaticFiles(directory=BASE_DIR), name="static")
+STATIC_WHITELIST = {"app.js", "style.css", "codec.js"}
+
+@app.get("/static/{filename}")
+async def serve_static(filename: str):
+    if filename not in STATIC_WHITELIST:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Not found")
+    filepath = os.path.join(BASE_DIR, filename)
+    return FileResponse(filepath)
 
 def get_html_content():
     html_path = os.path.join(os.path.dirname(__file__), "index.html")
@@ -155,17 +164,20 @@ async def root():
 
 
 @app.get("/audio")
-async def audio_stream():
+async def audio_stream(v: int | None = None):
     """
     Extracts and streams audio from the currently active video entry.
     Server-side volume control via the entry's 'vol' field (0-5 scale).
       0 = Muted (FFmpeg never runs)
       1 = Normal (1.0x)
       5 = Double  (2.0x)
+    Per-session: ?v=<index> selects which queue entry to serve audio for.
     """
     queue = getattr(app.state, "queue", [])
     idx   = getattr(app.state, "current_index", 0)
-    entry = queue[idx] if queue else {}
+    if v is not None and 0 <= v < len(queue):
+        idx = v
+    entry = queue[idx] if queue and 0 <= idx < len(queue) else {}
 
     vol_level  = entry.get("vol", 1)
     video_path = entry.get("video", "video.mp4")
@@ -186,6 +198,7 @@ async def audio_stream():
         process = subprocess.Popen(
             [
                 "ffmpeg",
+                "-nostdin",
                 "-i", video_path,
                 "-vn",
                 "-filter:a", f"volume={ffmpeg_vol}",
@@ -207,7 +220,12 @@ async def audio_stream():
                 yield chunk
         finally:
             process.stdout.close()
-            process.wait()
+            try:
+                process.terminate()
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
 
     return StreamingResponse(
         audio_generator(),
@@ -216,6 +234,22 @@ async def audio_stream():
     )
 
 
+def _origin_allowed(origin: str | None, host_header: str | None = None) -> bool:
+    """Reject cross-site WebSocket hijacking while allowing localhost and LAN same-origin."""
+    if not origin:
+        return True  # non-browser clients / test harness send no Origin
+    try:
+        origin_host = urlparse(origin).hostname
+    except ValueError:
+        return False
+    if origin_host in {"localhost", "127.0.0.1"}:
+        return True
+    # Same-origin: the page was served by THIS server. Covers LAN mode
+    # (--host 0.0.0.0), where the Origin host is the server's own LAN IP.
+    if host_header and origin_host == host_header.split(":")[0]:
+        return True
+    return False
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """
@@ -223,6 +257,12 @@ async def websocket_endpoint(websocket: WebSocket):
     Advances to the next entry automatically when a video ends.
     Loops back to the start if --loop is set.
     """
+    # ── Origin Check (prevents cross-site WebSocket hijacking) ──
+    origin = websocket.headers.get("origin")
+    if not _origin_allowed(origin, websocket.headers.get("host")):
+        await websocket.close(code=1008)
+        return
+
     await websocket.accept()
 
     # Opt-in adaptive codec (raw/zlib/delta). Legacy clients omit it and get
@@ -305,7 +345,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 effective_fps = source_fps
             frame_t = 1.0 / effective_fps
 
-            await websocket.send_text(f"INIT:{effective_fps}:{render_mode}:{cols}:{rows}:{int(pixel_mode)}")
+            await websocket.send_text(f"INIT:{effective_fps}:{render_mode}:{cols}:{rows}:{int(pixel_mode)}:{queue_index}")
             if skip_n > 1:
                 print(f"[FPS CAP] {source_fps} FPS → {effective_fps} FPS (skip every {skip_n} frames)")
 
@@ -587,6 +627,7 @@ if __name__ == "__main__":
 
     # ── Server ──
     srv = parser.add_argument_group('\033[33mServer\033[0m')
+    srv.add_argument("--host", default="127.0.0.1", help="Bind address (default 127.0.0.1; use 0.0.0.0 to expose on LAN)")
     srv.add_argument("--port", type=int, default=8000, help="Server port (default: 8000)")
     srv.add_argument("--debug", action="store_true", default=False, help="Enable bandwidth debug logging (RAW vs WIRE)")
 
@@ -661,10 +702,8 @@ if __name__ == "__main__":
         target=uvicorn.run,
         args=(app,),
         kwargs={
-            "host": "0.0.0.0",
+            "host": args.host,
             "port": args.port,
-            "ws_ping_interval": None,
-            "ws_ping_timeout": None,
             "log_level": "warning",
         },
         daemon=True
