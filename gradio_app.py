@@ -246,6 +246,34 @@ def _get_video_path(file_obj: Any, local_str: str) -> Optional[str]:
     return None
 
 
+def calc_auto_rows(cols: int, vid_w: int, vid_h: int, pixel_mode: bool) -> int:
+    """Derive rows from cols while preserving the source video's aspect ratio.
+
+    BUG FIX: aspect ratio mutation / vertical squashing in still + clip generation pipelines.
+    The source aspect must be maintained when translating cols -> rows. Previously
+    the still/preview paths used hardcoded divisors (2.5, 2.2, 1920/1080 default) and
+    the full clip path always applied the ascii /2 even for pixel/block styles, and
+    did not always probe the actual video's dimensions for the given clip.
+
+    This is the canonical way the ASCILINE engine (see stream_server.py) translates
+    a chosen column count into a grid without mutating the aspect ratio.
+
+    - pixel_mode=True (smooth colored blocks): square cells, rows = cols / (w/h)
+    - pixel_mode=False (letters / ascii): apply /2 correction because the rendering
+      font/canvas cells are square but characters are taller than wide; fewer rows
+      makes the final output image have the correct *visual* proportions matching
+      the source.
+
+    Always probe the *actual* vid_w, vid_h of the video being processed and use this
+    (never hardcode 1920/1080 or magic divisors like 2.5).
+    """
+    ratio = vid_w / max(vid_h, 1)
+    if pixel_mode:
+        return max(1, round(cols / ratio))
+    else:
+        return max(1, round(cols / ratio / 2))
+
+
 # =============================================================================
 # PIPELINE FUNCTIONS (modular, well-commented, reuse engine exactly)
 # =============================================================================
@@ -442,7 +470,15 @@ def make_ascii_art(
     job_dir = make_job_dir(workspace, "ascii_art", stem, f"frame{int(time_sec)}s_c{cols}")
 
     progress(0.1, desc="Extracting chosen frame...")
-    rows = max(1, round(cols / (1920 / 1080) / 2))  # reasonable default aspect
+
+    # Probe actual source aspect - must use real dims, never hardcoded 16:9 or magic numbers
+    cap_probe = cv2.VideoCapture(str(vpath))
+    vw = int(cap_probe.get(cv2.CAP_PROP_FRAME_WIDTH)) or 1
+    vh = int(cap_probe.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 1
+    cap_probe.release()
+
+    rows = calc_auto_rows(cols, vw, vh, pixel_mode=False)  # ascii letters mode
+    # BUG FIX: see calc_auto_rows (source aspect now always used; no more hardcoded 16:9 or magic /2.5 etc.)
     try:
         gray, bgr_small = get_specific_frame(str(vpath), time_sec, cols, rows)
     except Exception as e:
@@ -451,8 +487,16 @@ def make_ascii_art(
     mapper = AsciiMapper()
     chars = get_char_matrix(gray, mapper)
 
-    # Original thumbnail (small)
-    orig_small = cv2.resize(bgr_small, (min(320, cols * 3), min(180, rows * 3)))
+    # Original thumbnail (small) - preserve source aspect (use pixel-mode grid for the colored preview)
+    pixel_rows = calc_auto_rows(cols, vw, vh, pixel_mode=True)
+    _, bgr_pixel = get_specific_frame(str(vpath), time_sec, cols, pixel_rows)
+    # Fit in a reasonable box while keeping the source aspect
+    thumb_w = min(320, cols * 3)
+    thumb_h = max(1, int(thumb_w * (vh / max(vw, 1))))
+    if thumb_h > 240:
+        thumb_h = 240
+        thumb_w = max(1, int(thumb_h * (vw / max(vh, 1))))
+    orig_small = cv2.resize(bgr_pixel, (thumb_w, thumb_h), interpolation=cv2.INTER_LINEAR)
     orig_rgb = cv2.cvtColor(orig_small, cv2.COLOR_BGR2RGB)
 
     # ASCII visual (blocks + light glyphs for preview)
@@ -542,14 +586,19 @@ def create_asciiline_clip(
 
     progress(0.02, desc="Preparing decoder (re-using the real engine core)...")
 
-    # Auto rows
+    # Auto rows - must use source aspect + correct correction for the style
+    # (pixel/blocks: no correction; ascii letters: /2 char aspect correction)
+    # BUG FIX: see calc_auto_rows for details on the aspect mutation fix.
     cap_probe = cv2.VideoCapture(str(vpath))
     vw = int(cap_probe.get(cv2.CAP_PROP_FRAME_WIDTH)) or 640
     vh = int(cap_probe.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 360
     fps = cap_probe.get(cv2.CAP_PROP_FPS) or 24.0
     cap_probe.release()
 
-    rows = max(1, round(cols / (vw / max(vh, 1)) / 2))
+    use_glyphs = "letters" in style.lower()
+    pixel_style = "blocks" in style.lower() and not use_glyphs
+    is_pixel = pixel_style
+    rows = calc_auto_rows(cols, vw, vh, pixel_mode=is_pixel)
 
     decoder = VideoDecoder(str(vpath), cols, rows, skip_gray=False)
     mapper = AsciiMapper()
@@ -557,9 +606,6 @@ def create_asciiline_clip(
     total = decoder.frame_count or 100
     out_w = cols * scale
     out_h = rows * scale
-
-    use_glyphs = "letters" in style.lower()
-    pixel_style = "blocks" in style.lower() and not use_glyphs
 
     # Video writer (standard MP4 on black)
     video_path_out = job_dir / f"{stem}_c{cols}_{style_key}.mp4"
@@ -850,14 +896,19 @@ def build_ui():
                 gr.Button("📁 Open folder", size="sm").click(fn=lambda p: open_in_explorer(p), inputs=[t2_art_folder], outputs=[])
 
                 def _preview_widths(video, local, cols_base, time):
-                    # Simplified: just call the single-frame extractor at several widths and render
+                    # Must use actual source aspect for every preview width
                     vp = local or (video.name if video else None)
                     if not vp:
                         return []
+                    cap_probe = cv2.VideoCapture(vp)
+                    vw = int(cap_probe.get(cv2.CAP_PROP_FRAME_WIDTH)) or 1
+                    vh = int(cap_probe.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 1
+                    cap_probe.release()
                     results = []
                     for c in [80, 120, 160, 240]:
                         try:
-                            g, b = get_specific_frame(vp, float(time or 5), c, max(1, round(c / 2.5)))
+                            rows = calc_auto_rows(c, vw, vh, pixel_mode=False)
+                            g, b = get_specific_frame(vp, float(time or 5), c, rows)
                             m = AsciiMapper()
                             img = render_ascii_frame_image(g, b, m, "colored letters", scale=4, use_glyphs=True)
                             results.append((cv2.cvtColor(img, cv2.COLOR_BGR2RGB), f"{c} cols"))
@@ -871,11 +922,25 @@ def build_ui():
                     vp = local or (video.name if video else None)
                     if not vp:
                         raise gr.Error("Provide a video")
-                    g, b = get_specific_frame(vp, float(time or 5), int(cols), max(1, round(int(cols) / 2.5)))
+                    # Must probe actual aspect for this specific video
+                    cap_probe = cv2.VideoCapture(vp)
+                    vw = int(cap_probe.get(cv2.CAP_PROP_FRAME_WIDTH)) or 1
+                    vh = int(cap_probe.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 1
+                    cap_probe.release()
+                    rows = calc_auto_rows(cols, vw, vh, pixel_mode=False)
+                    g, b = get_specific_frame(vp, float(time or 5), int(cols), rows)
                     m = AsciiMapper()
                     vis = render_ascii_frame_image(g, b, m, "colored letters", scale=5, use_glyphs=True)
-                    block = "\n".join("".join(row) for row in get_char_matrix(g, m))
-                    orig = cv2.cvtColor(cv2.resize(b, (320, 180)), cv2.COLOR_BGR2RGB)
+                    # Original thumb preserving source aspect (pixel grid)
+                    pixel_rows = calc_auto_rows(cols, vw, vh, pixel_mode=True)
+                    _, b_pix = get_specific_frame(vp, float(time or 5), int(cols), pixel_rows)
+                    thumb_w = min(320, cols * 3)
+                    thumb_h = max(1, int(thumb_w * (vh / max(vw, 1))))
+                    if thumb_h > 240:
+                        thumb_h = 240
+                        thumb_w = max(1, int(thumb_h * (vw / max(vh, 1))))
+                    orig = cv2.resize(b_pix, (thumb_w, thumb_h), interpolation=cv2.INTER_LINEAR)
+                    orig = cv2.cvtColor(orig, cv2.COLOR_BGR2RGB)
                     return orig, vis, block
 
                 t2_frame_btn.click(_do_preview, [t2_video, t2_local, t2_cols, t2_time], [t2_orig, t2_ascii_vis, t2_ascii_text])
@@ -926,9 +991,16 @@ def build_ui():
                     vp = local or (v.name if v else None)
                     if not vp:
                         return None
-                    g, b = get_specific_frame(vp, float(t or 3), int(cols), max(1, round(int(cols) / 2.2)))
-                    m = AsciiMapper()
+                    # Probe real aspect + choose pixel_mode based on style
+                    cap_probe = cv2.VideoCapture(vp)
+                    vw = int(cap_probe.get(cv2.CAP_PROP_FRAME_WIDTH)) or 1
+                    vh = int(cap_probe.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 1
+                    cap_probe.release()
                     sty = "smooth blocks" if "blocks" in style.lower() else "colored letters"
+                    is_pixel = "blocks" in style.lower() and "smooth" in style.lower()
+                    rows = calc_auto_rows(cols, vw, vh, pixel_mode=is_pixel)
+                    g, b = get_specific_frame(vp, float(t or 3), int(cols), rows)
+                    m = AsciiMapper()
                     img = render_ascii_frame_image(g, b, m, sty, int(scale), use_glyphs="letters" in style.lower())
                     return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
