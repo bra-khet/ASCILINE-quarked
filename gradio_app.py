@@ -198,16 +198,15 @@ def make_job_dir(workspace: str, category: str, stem: str, tag: str) -> Path:
 
 
 def open_in_explorer(path: str):
-    """Cross-platform friendly 'open folder' action. Creates the dir if it doesn't exist."""
+    """Cross-platform friendly 'open folder' action."""
     p = Path(path)
-    try:
-        p.mkdir(parents=True, exist_ok=True)
-        if not p.is_dir():
-            p = p.parent
-        if p.exists():
+    if not p.exists():
+        p = p.parent
+    if p.exists():
+        try:
             webbrowser.open(p.as_uri())
-    except Exception:
-        pass
+        except Exception:
+            pass
     return None
 
 
