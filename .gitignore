@@ -44,6 +44,7 @@ videos/*
 .windows_cwd.txt
 *.log
 gradio_cached_examples/
+.gradio/
 # Any local config or env overrides
 .env.local
 .local_root*
