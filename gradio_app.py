@@ -249,24 +249,39 @@ def _get_video_path(file_obj: Any, local_str: str) -> Optional[str]:
 def calc_auto_rows(cols: int, vid_w: int, vid_h: int, pixel_mode: bool) -> int:
     """Derive rows from cols while preserving the source video's aspect ratio.
 
-    BUG FIX: aspect ratio mutation / vertical squashing in still + clip generation pipelines.
-    The source aspect must be maintained when translating cols -> rows. Previously
-    the still/preview paths used hardcoded divisors (2.5, 2.2, 1920/1080 default) and
-    the full clip path always applied the ascii /2 even for pixel/block styles, and
-    did not always probe the actual video's dimensions for the given clip.
+    Example (user's case): 800x600 video (4:3, ratio = vid_w/vid_h = 4/3 ≈1.333).
+    User sets cols=200 for the ASCII grid.
+    Expected: rows = round(200 / 1.333) = 150  (maintaining source aspect in the grid).
+    Then at scale=6: 1200 x 900 image.
+    Wrong before: rows≈75 (extra /2) → 1200x450 squashed output.
 
-    This is the canonical way the ASCILINE engine (see stream_server.py) translates
-    a chosen column count into a grid without mutating the aspect ratio.
+    The /2 (approx char aspect 0.5 or CHAR_RATIO=0.45 in terminal player) exists in the
+    original engine for *text-based outputs* (terminal ANSI or web player's <pre>/canvas text layer).
+    There, chars are taller than wide, so the grid uses fewer rows; the display font "corrects" the visual aspect.
 
-    - pixel_mode=True (smooth colored blocks): square cells, rows = cols / (w/h)
-    - pixel_mode=False (letters / ascii): apply /2 correction because the rendering
-      font/canvas cells are square but characters are taller than wide; fewer rows
-      makes the final output image have the correct *visual* proportions matching
-      the source.
+    For this Gradio app's raster *image* outputs (Tab 2 stills/vis/PNG, Tab 3 clips/previews, via
+    render_ascii_frame_image or make_transparent_png which lay out square scale x scale cells):
+    We MUST use pixel_mode=True (rows = round(cols / (w/h)) ) so the final pixel image has
+    correct source proportions. Letters (if style) or blocks are just drawn inside the cells.
+    Using False for letter styles was the remaining mutation after earlier "fixes".
 
-    Always probe the *actual* vid_w, vid_h of the video being processed and use this
-    (never hardcode 1920/1080 or magic divisors like 2.5).
+    In Tab 1 (pure text transcripts/JSON), we intentionally use False so the char grid
+    "looks right" if the text is printed/viewed in a terminal (matching engine text behavior).
+
+    Implementation rule in this file:
+    - Always probe the *real* vid_w, vid_h of the input video being processed.
+    - For visual/image paths (Tab2 + Tab3): pixel_mode=True
+    - For text data (Tab1): pixel_mode=False
+    - Never hardcode 16:9, magic /2.x , or unconditional /2 in image pipelines.
+
+    This helper matches the engine's logic in stream_server.py but is used with the
+    appropriate mode for the output type here.
     """
+    ratio = vid_w / max(vid_h, 1)
+    if pixel_mode:
+        return max(1, round(cols / ratio))
+    else:
+        return max(1, round(cols / ratio / 2))
     ratio = vid_w / max(vid_h, 1)
     if pixel_mode:
         return max(1, round(cols / ratio))
@@ -308,7 +323,7 @@ def transcribe_for_llm(
     vw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 1
     vh = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 1
     cap.release()
-    rows = max(1, round(cols / (vw / max(vh, 1)) / 2))
+    rows = calc_auto_rows(cols, vw, vh, pixel_mode=False)  # transcription is always ASCII/letters mode
 
     decoder = VideoDecoder(str(vpath), cols, rows, skip_gray=False)
     mapper = AsciiMapper()
@@ -477,8 +492,9 @@ def make_ascii_art(
     vh = int(cap_probe.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 1
     cap_probe.release()
 
-    rows = calc_auto_rows(cols, vw, vh, pixel_mode=False)  # ascii letters mode
-    # BUG FIX: see calc_auto_rows (source aspect now always used; no more hardcoded 16:9 or magic /2.5 etc.)
+    # Use source aspect for grid (pixel_mode=True) — see calc_auto_rows docstring.
+    # Ensures 200 cols on 4:3 source → 150 rows grid → correct aspect rendered image (e.g. scale 6x).
+    rows = calc_auto_rows(cols, vw, vh, pixel_mode=True)
     try:
         gray, bgr_small = get_specific_frame(str(vpath), time_sec, cols, rows)
     except Exception as e:
@@ -487,16 +503,14 @@ def make_ascii_art(
     mapper = AsciiMapper()
     chars = get_char_matrix(gray, mapper)
 
-    # Original thumbnail (small) - preserve source aspect (use pixel-mode grid for the colored preview)
-    pixel_rows = calc_auto_rows(cols, vw, vh, pixel_mode=True)
-    _, bgr_pixel = get_specific_frame(str(vpath), time_sec, cols, pixel_rows)
-    # Fit in a reasonable box while keeping the source aspect
+    # "Original (small)" thumbnail: use the low-res bgr (now source-aspect proportional) and fit to a display box preserving aspect.
+    # (This bgr_small is the proportional downsample used for char selection too.)
     thumb_w = min(320, cols * 3)
     thumb_h = max(1, int(thumb_w * (vh / max(vw, 1))))
     if thumb_h > 240:
         thumb_h = 240
         thumb_w = max(1, int(thumb_h * (vw / max(vh, 1))))
-    orig_small = cv2.resize(bgr_pixel, (thumb_w, thumb_h), interpolation=cv2.INTER_LINEAR)
+    orig_small = cv2.resize(bgr_small, (thumb_w, thumb_h), interpolation=cv2.INTER_LINEAR)
     orig_rgb = cv2.cvtColor(orig_small, cv2.COLOR_BGR2RGB)
 
     # ASCII visual (blocks + light glyphs for preview)
@@ -515,11 +529,18 @@ def make_ascii_art(
 
     if save_png:
         progress(0.8, desc="Rendering pretty PNG...")
-        # Use PIL for a clean monospace text render (classic look)
+        # Use PIL for a clean monospace text render.
+        # Use *square* cells so the saved PNG has source aspect (e.g. 200x150 grid → 1600x1200),
+        # matching the cv2 scaled renders and the user's requirement for the "ascii image".
         png_path = job_dir / f"{stem}_frame{int(time_sec)}s_c{cols}.png"
         h, w = gray.shape
-        # Try to find a decent monospace font
-        font_size = 12
+        cell = 8  # square cell size for correct aspect in the PNG
+        img_w = w * cell
+        img_h = h * cell
+        im = Image.new("RGB", (img_w, img_h), (8, 8, 10))
+        draw = ImageDraw.Draw(im)
+        # Try monospace font sized to (roughly) fit the square cell
+        font_size = cell - 1
         font = None
         for fp in [
             "C:/Windows/Fonts/consola.ttf",
@@ -536,12 +557,11 @@ def make_ascii_art(
         if font is None:
             font = ImageFont.load_default()
 
-        char_w, char_h = 7, 12  # approximate for the font size we chose
-        img_w, img_h = w * char_w, h * char_h
-        im = Image.new("RGB", (img_w, img_h), (8, 8, 10))
-        draw = ImageDraw.Draw(im)
         for r, row in enumerate(chars):
-            draw.text((0, r * char_h), "".join(row), fill=(230, 230, 230), font=font)
+            for c, ch in enumerate(row):
+                x = c * cell + 1
+                y = r * cell + 1
+                draw.text((x, y), ch, fill=(230, 230, 230), font=font)
         im.save(png_path)
         created_png = str(png_path)
 
@@ -597,8 +617,9 @@ def create_asciiline_clip(
 
     use_glyphs = "letters" in style.lower()
     pixel_style = "blocks" in style.lower() and not use_glyphs
-    is_pixel = pixel_style
-    rows = calc_auto_rows(cols, vw, vh, pixel_mode=is_pixel)
+    # Always source aspect for the grid in image outputs (see calc_auto_rows docstring for math and why).
+    # This fixes the mutation: for 800x600 @ 200 cols we get exactly 150 rows (not 75), 1200x900 at 6x.
+    rows = calc_auto_rows(cols, vw, vh, pixel_mode=True)
 
     decoder = VideoDecoder(str(vpath), cols, rows, skip_gray=False)
     mapper = AsciiMapper()
@@ -676,7 +697,7 @@ def create_asciiline_clip(
 
 You can now use the transparent frames + ffmpeg to create alpha video in any format you like (webm, prores, etc.).
 """
-    return md, str(final_video), str(job_dir), "Video ready for preview above."
+    return md, str(final_video), str(job_dir)
 
 
 def launch_browser_player(
@@ -907,7 +928,8 @@ def build_ui():
                     results = []
                     for c in [80, 120, 160, 240]:
                         try:
-                            rows = calc_auto_rows(c, vw, vh, pixel_mode=False)
+                            # Use source aspect (pixel_mode=True) — see calc_auto_rows.
+                            rows = calc_auto_rows(c, vw, vh, pixel_mode=True)
                             g, b = get_specific_frame(vp, float(time or 5), c, rows)
                             m = AsciiMapper()
                             img = render_ascii_frame_image(g, b, m, "colored letters", scale=4, use_glyphs=True)
@@ -927,19 +949,20 @@ def build_ui():
                     vw = int(cap_probe.get(cv2.CAP_PROP_FRAME_WIDTH)) or 1
                     vh = int(cap_probe.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 1
                     cap_probe.release()
-                    rows = calc_auto_rows(cols, vw, vh, pixel_mode=False)
+                    # Use source aspect grid (pixel_mode=True) for the visual render — see calc_auto_rows.
+                    rows = calc_auto_rows(cols, vw, vh, pixel_mode=True)
                     g, b = get_specific_frame(vp, float(time or 5), int(cols), rows)
                     m = AsciiMapper()
                     vis = render_ascii_frame_image(g, b, m, "colored letters", scale=5, use_glyphs=True)
-                    # Original thumb preserving source aspect (pixel grid)
-                    pixel_rows = calc_auto_rows(cols, vw, vh, pixel_mode=True)
-                    _, b_pix = get_specific_frame(vp, float(time or 5), int(cols), pixel_rows)
+                    vis = cv2.cvtColor(vis, cv2.COLOR_BGR2RGB)
+                    block = "\n".join("".join(row) for row in get_char_matrix(g, m))
+                    # Original (colored) thumb: reuse the low-res b (source-aspect) and size to nice box preserving aspect.
                     thumb_w = min(320, cols * 3)
                     thumb_h = max(1, int(thumb_w * (vh / max(vw, 1))))
                     if thumb_h > 240:
                         thumb_h = 240
                         thumb_w = max(1, int(thumb_h * (vw / max(vh, 1))))
-                    orig = cv2.resize(b_pix, (thumb_w, thumb_h), interpolation=cv2.INTER_LINEAR)
+                    orig = cv2.resize(b, (thumb_w, thumb_h), interpolation=cv2.INTER_LINEAR)
                     orig = cv2.cvtColor(orig, cv2.COLOR_BGR2RGB)
                     return orig, vis, block
 
@@ -997,8 +1020,8 @@ def build_ui():
                     vh = int(cap_probe.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 1
                     cap_probe.release()
                     sty = "smooth blocks" if "blocks" in style.lower() else "colored letters"
-                    is_pixel = "blocks" in style.lower() and "smooth" in style.lower()
-                    rows = calc_auto_rows(cols, vw, vh, pixel_mode=is_pixel)
+                    # Source aspect grid (pixel_mode=True) — see calc_auto_rows docstring for the math and rationale.
+                    rows = calc_auto_rows(cols, vw, vh, pixel_mode=True)
                     g, b = get_specific_frame(vp, float(t or 3), int(cols), rows)
                     m = AsciiMapper()
                     img = render_ascii_frame_image(g, b, m, sty, int(scale), use_glyphs="letters" in style.lower())
