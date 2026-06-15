@@ -6,7 +6,7 @@ A clean, professional, local desktop-style GUI for the ASCILINE engine.
 This file and other additions in the ASCILINE-quarked fork are subject to exactly the same license terms as the original project (see the root LICENSE file). This includes the full MIT terms PLUS the strict ANTI-ADVERTISEMENT RESTRICTION: no use (in whole or part) for serving, delivering, or displaying ads, sponsored content, or commercial marketing. Any such use terminates the license immediately.
 
 Intended for personal exploration, creativity, research, accessibility, and low-bandwidth applications only. Zero liability for misuse. The project promotes user freedom, not restriction or commercial trickery.
-"""
+
 
 This is a single-file Gradio application that makes the full power of ASCILINE
 (VideoDecoder + AsciiMapper + adaptive codec + re-encoding behavior) accessible
