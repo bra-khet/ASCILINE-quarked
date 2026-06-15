@@ -3,6 +3,11 @@
 gradio_app.py — ASCILINE Studio
 A clean, professional, local desktop-style GUI for the ASCILINE engine.
 
+This file and other additions in the ASCILINE-quarked fork are subject to exactly the same license terms as the original project (see the root LICENSE file). This includes the full MIT terms PLUS the strict ANTI-ADVERTISEMENT RESTRICTION: no use (in whole or part) for serving, delivering, or displaying ads, sponsored content, or commercial marketing. Any such use terminates the license immediately.
+
+Intended for personal exploration, creativity, research, accessibility, and low-bandwidth applications only. Zero liability for misuse. The project promotes user freedom, not restriction or commercial trickery.
+"""
+
 This is a single-file Gradio application that makes the full power of ASCILINE
 (VideoDecoder + AsciiMapper + adaptive codec + re-encoding behavior) accessible
 through a beautiful, simple, layman-friendly interface.
@@ -63,6 +68,22 @@ try:
 except Exception:
     imageio = None
 
+# --- Windows CWD mapping for reliable "Open folder" buttons ---
+# Persisted in .windows_cwd.txt in the project root (simple file acting as saved "env var").
+# On Windows, when running via venv/gradio, relative paths like "asciline_outputs/..." 
+# don't resolve in file:// or os.startfile. User sets the full Windows path to the repo root here.
+WINDOWS_ROOT_FILE = Path(__file__).parent / ".windows_cwd.txt"
+
+def load_windows_root() -> str:
+    if WINDOWS_ROOT_FILE.exists():
+        try:
+            return WINDOWS_ROOT_FILE.read_text(encoding="utf-8").strip()
+        except Exception:
+            pass
+    return ""
+
+WINDOWS_ROOT = load_windows_root()
+
 # === ENGINE REUSE (MANDATORY) ===
 # We import and use these for EVERY frame operation to guarantee identical results
 # to the rest of the ASCILINE tools (terminal player, web server, previous pipelines).
@@ -114,8 +135,30 @@ def render_ascii_frame_image(
         frame[:] = upscaled
         return frame
 
-    # Colored blocks + character overlays (classic ASCII look)
+    # Letters case
     char_grid = get_char_matrix(gray, mapper)
+
+    if "classic" in style.lower():
+        # Classic letters: text only, plain white letters on black background (no colored blocks)
+        # This is "text only" / plain ASCII art
+        cell_h, cell_w = scale, scale
+        font = cv2.FONT_HERSHEY_PLAIN
+        font_scale = max(0.35, scale / 9.0)
+        thickness = max(1, scale // 6)
+
+        for r in range(rows):
+            for c in range(cols):
+                y0 = r * cell_h
+                x0 = c * cell_w
+                ch = str(char_grid[r, c])
+                txt_color = (255, 255, 255)  # plain white for classic text only
+                (tw, th), _ = cv2.getTextSize(ch, font, font_scale, thickness)
+                tx = x0 + (cell_w - tw) // 2
+                ty = y0 + (cell_h + th) // 2
+                cv2.putText(frame, ch, (tx, ty), font, font_scale, txt_color, thickness, cv2.LINE_AA)
+        return frame
+
+    # Colored letters: colored blocks + contrasting letter overlay (classic colored ASCII look)
     rgb_grid = get_color_matrix(bgr, quantize_bits=0)
 
     cell_h, cell_w = scale, scale
@@ -143,23 +186,6 @@ def render_ascii_frame_image(
             cv2.putText(frame, ch, (tx, ty), font, font_scale, txt_color, thickness, cv2.LINE_AA)
 
     return frame
-
-
-def make_transparent_png(
-    gray: np.ndarray, bgr: np.ndarray, mapper: AsciiMapper, scale: int = 4
-) -> np.ndarray:
-    """BGRA image with black fully transparent — perfect for --png-sequence --transparent path."""
-    rows, cols = gray.shape
-    out_h, out_w = rows * scale, cols * scale
-    canvas = np.zeros((out_h, out_w, 4), dtype=np.uint8)
-
-    upscaled = cv2.resize(bgr, (out_w, out_h), interpolation=cv2.INTER_NEAREST)
-    canvas[:, :, :3] = upscaled
-
-    # Alpha = 255 wherever there is any color (simple but effective)
-    mask = (upscaled.sum(axis=2) > 0).astype(np.uint8) * 255
-    canvas[:, :, 3] = mask
-    return canvas
 
 
 def get_specific_frame(video_path: str, time_sec: float, cols: int, rows: int) -> Tuple[np.ndarray, np.ndarray]:
@@ -198,13 +224,25 @@ def make_job_dir(workspace: str, category: str, stem: str, tag: str) -> Path:
 
 
 def open_in_explorer(path: str):
-    """Cross-platform friendly 'open folder' action."""
+    """Cross-platform friendly 'open folder' action.
+
+    If WINDOWS_ROOT is set (full Windows path to the project root, saved via the UI control at bottom),
+    relative output paths (e.g. asciline_outputs/...) are resolved against it first.
+    This fixes 'Open folder' not working when the process CWD is a venv-relative path on Windows.
+    Falls back to os.startfile on Windows for best Explorer integration.
+    """
     p = Path(path)
+    if not p.is_absolute():
+        root = Path(WINDOWS_ROOT) if WINDOWS_ROOT else Path.cwd().resolve()
+        p = (root / p).resolve()
     if not p.exists():
         p = p.parent
     if p.exists():
         try:
-            webbrowser.open(p.as_uri())
+            if os.name == "nt":
+                os.startfile(str(p))
+            else:
+                webbrowser.open(p.as_uri())
         except Exception:
             pass
     return None
@@ -606,19 +644,26 @@ def create_asciiline_clip(
 
     progress(0.02, desc="Preparing decoder (re-using the real engine core)...")
 
-    # Auto rows - must use source aspect + correct correction for the style
-    # (pixel/blocks: no correction; ascii letters: /2 char aspect correction)
-    # BUG FIX: see calc_auto_rows for details on the aspect mutation fix.
+    # Auto rows - always source aspect (pixel_mode=True) for image outputs in this tool.
+    # The style (classic/colored letters vs blocks) only affects drawing, not grid sizing.
+    # See calc_auto_rows docstring for the math (e.g. 200 cols on 4:3 → 150 rows).
     cap_probe = cv2.VideoCapture(str(vpath))
     vw = int(cap_probe.get(cv2.CAP_PROP_FRAME_WIDTH)) or 640
     vh = int(cap_probe.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 360
     fps = cap_probe.get(cv2.CAP_PROP_FPS) or 24.0
     cap_probe.release()
 
-    use_glyphs = "letters" in style.lower()
-    pixel_style = "blocks" in style.lower() and not use_glyphs
+    style_lower = style.lower()
+    if "smooth" in style_lower or ("blocks" in style_lower and "no" in style_lower):
+        sty = "smooth blocks"
+        use_glyphs = False
+    elif "classic" in style_lower:
+        sty = "classic letters"
+        use_glyphs = True
+    else:
+        sty = "colored letters"
+        use_glyphs = True
     # Always source aspect for the grid in image outputs (see calc_auto_rows docstring for math and why).
-    # This fixes the mutation: for 800x600 @ 200 cols we get exactly 150 rows (not 75), 1200x900 at 6x.
     rows = calc_auto_rows(cols, vw, vh, pixel_mode=True)
 
     decoder = VideoDecoder(str(vpath), cols, rows, skip_gray=False)
@@ -649,14 +694,20 @@ def create_asciiline_clip(
         # Visual frame exactly as the established pipeline does it
         vis = render_ascii_frame_image(
             gray, bgr, mapper,
-            style="smooth blocks" if pixel_style else "colored letters",
+            style=sty,
             scale=scale,
             use_glyphs=use_glyphs
         )
         writer.write(vis)
 
         if png_dir:
-            tpng = make_transparent_png(gray, bgr, mapper, scale=scale)
+            # Render the PNG frame using the exact same styled vis as the video (respects user's Visual style choice,
+            # including letters if selected). Then promote to BGRA with alpha on non-black content.
+            # This ensures the transparent PNG sequence is visually identical in style to the MP4.
+            tpng = np.zeros((vis.shape[0], vis.shape[1], 4), dtype=np.uint8)
+            tpng[:, :, :3] = vis
+            mask = np.any(vis > 5, axis=2).astype(np.uint8) * 255
+            tpng[:, :, 3] = mask
             cv2.imwrite(str(png_dir / f"frame_{frame_idx:05d}.png"), tpng)
 
         frame_idx += 1
@@ -1019,12 +1070,21 @@ def build_ui():
                     vw = int(cap_probe.get(cv2.CAP_PROP_FRAME_WIDTH)) or 1
                     vh = int(cap_probe.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 1
                     cap_probe.release()
-                    sty = "smooth blocks" if "blocks" in style.lower() else "colored letters"
+                    style_lower = style.lower()
+                    if "smooth" in style_lower or ("blocks" in style_lower and "no" in style_lower):
+                        sty = "smooth blocks"
+                        use_glyphs = False
+                    elif "classic" in style_lower:
+                        sty = "classic letters"
+                        use_glyphs = True
+                    else:
+                        sty = "colored letters"
+                        use_glyphs = True
                     # Source aspect grid (pixel_mode=True) — see calc_auto_rows docstring for the math and rationale.
                     rows = calc_auto_rows(cols, vw, vh, pixel_mode=True)
                     g, b = get_specific_frame(vp, float(t or 3), int(cols), rows)
                     m = AsciiMapper()
-                    img = render_ascii_frame_image(g, b, m, sty, int(scale), use_glyphs="letters" in style.lower())
+                    img = render_ascii_frame_image(g, b, m, sty, int(scale), use_glyphs=use_glyphs)
                     return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
                 t3_preview_btn.click(_clip_preview, [t3_video, t3_local, t3_cols, t3_style, t3_scale, t3_preview_time], t3_preview_img)
@@ -1104,6 +1164,42 @@ def build_ui():
             "All processing re-uses the real `VideoDecoder` + `AsciiMapper` and follows the exact behavior documented in the project. "
             "Outputs are deliberately organized so you (and any AI tools) can find them easily later."
         )
+
+        # Subtle advanced control at the very bottom (out of the way)
+        with gr.Accordion("🔧 Windows path mapping (for Open folder buttons)", open=False):
+            gr.Markdown(
+                "If the '📁 Open folder' buttons don't work (they use relative paths from the process CWD), "
+                "set the **full Windows path** to this project's root below. "
+                "It will be saved to `.windows_cwd.txt` in the repo root and used to resolve folders like `asciline_outputs/...` "
+                "to e.g. `C:\\Users\\yourname\\claude-code\\ASCILINE-quarked\\asciline_outputs\\...`.\n\n"
+                "Example value: `C:\\Users\\yourname\\claude-code\\ASCILINE-quarked`"
+            )
+            windows_root_input = gr.Textbox(
+                value=WINDOWS_ROOT,
+                label="Full Windows path to this repo root",
+                placeholder=r"C:\Users\yourname\claude-code\ASCILINE-quarked",
+                info="Save, then restart the app (e.g. gradio ./gradio_app.py) for the mapping to take effect in new sessions."
+            )
+            save_root_btn = gr.Button("Save mapping", size="sm")
+            save_root_status = gr.Textbox(label="Save status", interactive=False, visible=False)
+
+            def save_windows_root(val: str):
+                val = (val or "").strip()
+                if not val:
+                    return gr.update(value="Enter a path first.", visible=True)
+                try:
+                    WINDOWS_ROOT_FILE.write_text(val, encoding="utf-8")
+                    global WINDOWS_ROOT
+                    WINDOWS_ROOT = val
+                    return gr.update(value=f"Saved to {WINDOWS_ROOT_FILE.name}. Restart the Gradio server (e.g. gradio ./gradio_app.py) to apply in new sessions.", visible=True)
+                except Exception as ex:
+                    return gr.update(value=f"Failed to save: {ex}", visible=True)
+
+            save_root_btn.click(
+                save_windows_root,
+                inputs=[windows_root_input],
+                outputs=[save_root_status]
+            )
 
     return demo
 

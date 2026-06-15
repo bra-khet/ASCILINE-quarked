@@ -2,6 +2,11 @@
 """
 transcribe_ascii.py — Minimal demo pipeline for ASCILINE (Sprint 2 deliverable)
 
+This script and other additions in the ASCILINE-quarked fork are subject to exactly the same license terms as the original project (see the root LICENSE file). This includes the full MIT terms PLUS the strict ANTI-ADVERTISEMENT RESTRICTION: no use (in whole or part) for serving, delivering, or displaying ads, sponsored content, or commercial marketing. Any such use terminates the license immediately.
+
+Intended for personal exploration, creativity, research, accessibility, and low-bandwidth applications only. Zero liability for misuse.
+"""
+
 Turns any video that OpenCV can open into:
   1. A plain or structured TEXT FILE of the ASCILINE representation
      (default: clean character grids only — ideal for LLM inference, search, archiving).

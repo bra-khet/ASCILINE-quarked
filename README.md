@@ -6,6 +6,24 @@
 **This is a personal fork (ASCILINE-quarked) for individual exploration, application research, and AI-assisted development.**  
 See **[HOWTO.md](./HOWTO.md)** for a complete plain-language tutorial that explains every part of the system, answers practical questions about GitHub Pages / distribution / pipelines / LLMs, and contains a zero-assumptions beginner walkthrough (Windows/PowerShell focused).
 
+### Quick start with the GUI (for easy experiments)
+There's a friendly graphical interface called `gradio_app.py` that lets you play with turning videos into ASCII art or special clips without typing commands.
+
+1. Make sure you have the extra packages: `pip install gradio pillow imageio`
+2. Run it with: `python gradio_app.py` (or `gradio ./gradio_app.py`)
+3. It opens in your web browser.
+4. The app has tabs for different things:
+   - Turn video into text you can feed to AI/LLMs (clean character grids).
+   - Make single ASCII art frames (pick a moment, different widths).
+   - Create full "ASCII video" clips (choose columns, style like plain letters, colored letters, or just colored blocks; option for transparent frames too).
+   - Launch the original web player in the browser.
+5. Pick a video (upload or type local path), tweak the sliders (like "how many columns/letters wide"), hit preview or create, and look in the `asciline_outputs/` folder for results.
+6. Everything stays local on your machine. Outputs get organized automatically so you can find them later.
+
+This GUI was added in the fork to make hands-on experimenting and learning the engine much easier and more visual. All the heavy lifting still uses the original engine code under the hood.
+
+**Tip for GitHub / sharing your fork:** Your experiment results live in `asciline_outputs/` (and similar). These folders (plus the Windows path mapping file if you use it) are listed in `.gitignore` so they don't get committed. Your personal videos, generated ASCII clips, transcripts, etc. stay private to you. If you push to GitHub, only the engine + GUI code goes up — perfect for sharing improvements without your data.
+
 **ASCILINE** is a high-performance, cross-platform real-time ASCII video rendering engine. **Our core objective is to transform the web into a highly dynamic and interactive typographic canvas.** By mapping pixels to text-based representations, we unlock new possibilities for web media delivery.
 
 | Output | Details |
@@ -212,6 +230,10 @@ ASCILINE is distributed under the MIT License, but with a strict ethical guardra
 Because this engine bypasses standard browser constraints and ad-blockers (by rendering pure text instead of video), we strictly prohibit its use by ad-networks to serve unblockable advertisements. 
 
 See the [LICENSE](LICENSE) file for the full text, which includes the **ANTI-ADVERTISEMENT RESTRICTION** clause.
+
+**Important for this fork's additions (like the GUI):** The same strict rules apply to everything here, including new scripts like the Gradio interface and any experiments. This is meant for personal freedom, creativity, research, accessibility, and low-bandwidth fun — not for commercial trickery or evading user controls. No company or ad service should use any part of this (original or added) to bypass blockers or serve unwanted content. The original authors and fork contributors accept zero liability for any misuse.
+
+Outputs from the tools (ASCII clips, transcripts, frames, etc.) are personal and get saved in folders like `asciline_outputs/`. These are ignored by git so your experiments don't accidentally get committed.
 
 ## 📈 Star History
 [![Star History Chart](https://api.star-history.com/svg?repos=YusufB5/ASCILINE&type=Date)](https://star-history.com/#YusufB5/ASCILINE&Date)

@@ -24,3 +24,12 @@ SOFTWARE.
 
 ANTI-ADVERTISEMENT RESTRICTION:
 The permission granted by this license explicitly EXCLUDES the right to use this software, in whole or in part, for the purpose of serving, delivering, or displaying digital advertisements, sponsored content, or any form of commercial marketing to end-users. Any such use immediately terminates this license.
+
+---
+
+ADDITIONS IN THIS FORK (e.g. gradio_app.py GUI, supporting scripts like transcribe_ascii.py, configuration helpers, and any experiment or pipeline code added for personal exploration):
+These modifications and new files are provided under exactly the same MIT license terms and the identical ANTI-ADVERTISEMENT RESTRICTION above. They are intended solely to make the original engine more approachable for individual learning, creative experimentation, AI/LLM research, accessibility, low-bandwidth applications, and personal media play. 
+
+No part of the original engine or these additions may be used by advertising networks, agencies, or any entity to create unblockable ads, bypass user tools like ad blockers, or for any commercial marketing purpose. This project promotes freedom and open exploration — it is explicitly not for restricting users or enabling sneaky commercial content delivery.
+
+THE SOFTWARE (ORIGINAL + FORK ADDITIONS) IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND. IN NO EVENT SHALL THE AUTHORS, COPYRIGHT HOLDERS, OR CONTRIBUTORS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY ARISING FROM USE OR MISUSE. Use at your own risk.

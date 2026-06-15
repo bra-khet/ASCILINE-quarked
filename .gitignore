@@ -4,12 +4,15 @@ __pycache__/
 *.pyo
 *.pyd
 
-# Video files (too large for GitHub, user provides their own)
+# Video/media files (too large for GitHub, user provides their own)
 *.mp4
 *.avi
 *.mov
 *.mkv
 *.webm
+*.gif
+*.mp3
+*.wav
 
 # Environment & IDE
 .env
@@ -33,3 +36,13 @@ experiments/autobahn/reports/
 
 # stray temp dirs
 tmp*/
+
+# GUI and experiment outputs (user-generated, personal data, large)
+asciline_outputs/
+# Windows local path mapping (contains full filesystem path - privacy)
+.windows_cwd.txt
+*.log
+gradio_cached_examples/
+# Any local config or env overrides
+.env.local
+.local_root*
