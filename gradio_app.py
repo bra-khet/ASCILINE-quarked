@@ -247,64 +247,6 @@ def _get_video_path(file_obj: Any, local_str: str) -> Optional[str]:
     return None
 
 
-# --- Native file/folder browser helpers (for local desktop use) ---
-# These open the OS default file picker when the user clicks "Browse..."
-# This fulfills the requirement that path fields open a browser dialog to choose
-# when empty or when the browse button is used.
-try:
-    import tkinter as tk
-    from tkinter import filedialog as tk_filedialog
-    _HAS_TK = True
-except Exception:
-    _HAS_TK = False
-    tk = None
-    tk_filedialog = None
-
-
-def browse_file(current: str = "") -> str:
-    """Open native file picker for a video/path. Returns chosen path or current."""
-    if not _HAS_TK:
-        # Fallback: return current so UI doesn't break on systems without Tk
-        return current or ""
-    root = tk.Tk()
-    root.withdraw()
-    root.attributes("-topmost", True)
-    try:
-        initial = str(Path(current).parent) if current else None
-        chosen = tk_filedialog.askopenfilename(
-            title="Select video file",
-            initialdir=initial,
-            filetypes=[("Video files", "*.mp4 *.mov *.mkv *.avi *.webm"), ("All files", "*.*")]
-        )
-        return chosen or current
-    finally:
-        try:
-            root.destroy()
-        except Exception:
-            pass
-
-
-def browse_directory(current: str = "") -> str:
-    """Open native directory picker. Returns chosen path or current."""
-    if not _HAS_TK:
-        return current or ""
-    root = tk.Tk()
-    root.withdraw()
-    root.attributes("-topmost", True)
-    try:
-        initial = str(Path(current)) if current else None
-        chosen = tk_filedialog.askdirectory(
-            title="Select folder",
-            initialdir=initial
-        )
-        return chosen or current
-    finally:
-        try:
-            root.destroy()
-        except Exception:
-            pass
-
-
 # =============================================================================
 # PIPELINE FUNCTIONS (modular, well-commented, reuse engine exactly)
 # =============================================================================
@@ -314,7 +256,6 @@ def transcribe_for_llm(
     local_path: str,
     workspace: str,
     cols: int,
-    custom_cols: int,
     save_mode: str,
     include_color: bool,
     also_binary: bool,
@@ -331,9 +272,6 @@ def transcribe_for_llm(
 
     vpath = Path(video_path)
     stem = vpath.stem
-    # Power user unclamp support: custom_cols > 0 overrides the (clamped) slider
-    if custom_cols and int(custom_cols) > 0:
-        cols = int(custom_cols)
     job_dir = make_job_dir(workspace, "llm_transcripts", stem, f"c{cols}")
 
     progress(0.05, desc="Opening video and calculating grid...")
@@ -487,10 +425,7 @@ def make_ascii_art(
     local_path: str,
     workspace: str,
     cols: int,
-    custom_cols: int,
     time_sec: float,
-    frame_num: float,
-    scrub: float,
     save_text: bool,
     save_png: bool,
     progress: gr.Progress = gr.Progress(),
@@ -505,30 +440,12 @@ def make_ascii_art(
 
     vpath = Path(video_path)
     stem = vpath.stem
-    if custom_cols and int(custom_cols) > 0:
-        cols = int(custom_cols)
-
-    # Compute effective preview time from the most specific control (frame > scrub > seconds)
-    # Probe for fps/duration to support frame and % scrub
-    cap = cv2.VideoCapture(str(vpath))
-    fps = cap.get(cv2.CAP_PROP_FPS) or 24.0
-    total_f = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-    cap.release()
-    duration = total_f / fps if total_f > 0 else 0.0
-
-    effective_time = float(time_sec or 0)
-    if frame_num and float(frame_num) > 0:
-        effective_time = float(frame_num) / fps
-    elif scrub and float(scrub) > 0:
-        effective_time = (float(scrub) / 100.0) * duration
-    effective_time = max(0.0, effective_time)
-
-    job_dir = make_job_dir(workspace, "ascii_art", stem, f"frame{int(effective_time)}s_c{cols}")
+    job_dir = make_job_dir(workspace, "ascii_art", stem, f"frame{int(time_sec)}s_c{cols}")
 
     progress(0.1, desc="Extracting chosen frame...")
     rows = max(1, round(cols / (1920 / 1080) / 2))  # reasonable default aspect
     try:
-        gray, bgr_small = get_specific_frame(str(vpath), effective_time, cols, rows)
+        gray, bgr_small = get_specific_frame(str(vpath), time_sec, cols, rows)
     except Exception as e:
         raise gr.Error(f"Could not extract frame: {e}")
 
@@ -604,7 +521,6 @@ def create_asciiline_clip(
     local_path: str,
     workspace: str,
     cols: int,
-    custom_cols: int,
     style: str,
     scale: int,
     include_audio: bool,
@@ -622,8 +538,6 @@ def create_asciiline_clip(
 
     vpath = Path(video_path)
     stem = vpath.stem
-    if custom_cols and int(custom_cols) > 0:
-        cols = int(custom_cols)
     style_key = style.lower().replace(" ", "_")
     job_dir = make_job_dir(workspace, "ascii_clips", stem, f"c{cols}_{style_key}")
 
@@ -726,7 +640,6 @@ def launch_browser_player(
     folder_path: str,
     playlist_path: str,
     cols: int,
-    custom_cols: int,
     mode: int,
     pixel: bool,
     vol: int,
@@ -748,9 +661,6 @@ def launch_browser_player(
             pass
 
     cmd = [sys.executable, "stream_server.py"]
-
-    if custom_cols and int(custom_cols) > 0:
-        cols = int(custom_cols)
 
     stable_video = None
     if source_type == "Single video":
@@ -853,13 +763,12 @@ def build_ui():
             workspace = gr.Textbox(
                 value="asciline_outputs",
                 label="Workspace root folder",
-                info="All results go into organized subfolders inside this folder (llm_transcripts/, ascii_art/, ascii_clips/, etc.). Change anytime. Use Browse to pick.",
-                scale=3
+                info="All results go into organized subfolders inside this folder (llm_transcripts/, ascii_art/, ascii_clips/, etc.). Change anytime.",
+                scale=4
             )
-            ws_browse = gr.Button("Browse...", size="sm", scale=1)
-            ws_open = gr.Button("📁 Open / Create", size="sm", scale=1)
-        ws_browse.click(fn=browse_directory, inputs=[workspace], outputs=[workspace])
-        ws_open.click(fn=lambda w: open_in_explorer(w), inputs=[workspace], outputs=[])
+            gr.Button("📁 Open workspace", size="sm", scale=1).click(
+                fn=lambda w: open_in_explorer(w), inputs=[workspace], outputs=[]
+            )
 
         gr.Markdown("---")
 
@@ -873,12 +782,9 @@ def build_ui():
 
                 with gr.Row():
                     t1_video = gr.File(label="Upload video", file_types=[".mp4", ".mov", ".mkv", ".avi", ".webm"], scale=2)
-                    t1_local = gr.Textbox(label="Or paste full local path (recommended for big files)", placeholder="C:\\Videos\\myclip.mp4", scale=2)
-                    t1_local_browse = gr.Button("Browse file...", size="sm", scale=1)
-                t1_local_browse.click(fn=browse_file, inputs=[t1_local], outputs=[t1_local])
+                    t1_local = gr.Textbox(label="Or paste full local path (recommended for big files)", placeholder="C:\\Videos\\myclip.mp4", scale=3)
 
-                t1_cols = gr.Slider(60, 280, value=160, step=10, label="Character columns (more = sharper detail, bigger files, slower)")
-                t1_custom_cols = gr.Number(value=0, label="Custom columns (power user — set >0 to unclamp/remove 280 limit, e.g. 500+)", minimum=10, maximum=2000, step=10)
+                t1_cols = gr.Slider(60, 320, value=160, step=10, label="Character columns (more = sharper detail, bigger files, slower)")
 
                 t1_save_mode = gr.Radio(
                     ["Single text file with frame markers (easiest to read and search)",
@@ -889,11 +795,8 @@ def build_ui():
                 )
 
                 with gr.Accordion("Color and compact archive options (advanced)", open=False):
-                    t1_include_color = gr.Checkbox(False, label="Include color data? (OFF by default — OFF strongly recommended for LLMs)")
+                    t1_include_color = gr.Checkbox(False, label="Include color data? (OFF by default — strongly recommended for LLMs)")
                     t1_binary = gr.Checkbox(False, label="Also create a compact binary archive using the engine's adaptive codec (excellent for long-term storage)")
-                    # GitHub link for "Engine's adaptive frame codec" docs.
-                    # TODO: if the repo or anchor changes, update the URL below (see videos/.ignore/workspace/README.md for the hook).
-                    gr.Markdown("📖 [Engine's adaptive frame codec docs](https://github.com/bra-khet/ASCILINE-quarked#%EF%B8%8F-adaptive-frame-codec-opt-in-backward-compatible)")
 
                 t1_btn = gr.Button("Transcribe Video", variant="primary", size="lg")
 
@@ -905,7 +808,7 @@ def build_ui():
 
                 t1_btn.click(
                     fn=transcribe_for_llm,
-                    inputs=[t1_video, t1_local, workspace, t1_cols, t1_custom_cols, t1_save_mode, t1_include_color, t1_binary],
+                    inputs=[t1_video, t1_local, workspace, t1_cols, t1_save_mode, t1_include_color, t1_binary],
                     outputs=[t1_status, t1_main_file, t1_folder, t1_preview]
                 )
 
@@ -917,23 +820,13 @@ def build_ui():
 
                 with gr.Row():
                     t2_video = gr.File(label="Upload video", file_types=["video"], scale=2)
-                    t2_local = gr.Textbox(label="Or local path", placeholder="C:\\Videos\\clip.mp4", scale=2)
-                    t2_local_browse = gr.Button("Browse file...", size="sm", scale=1)
-                t2_local_browse.click(fn=browse_file, inputs=[t2_local], outputs=[t2_local])
+                    t2_local = gr.Textbox(label="Or local path", placeholder="C:\\Videos\\clip.mp4", scale=3)
 
                 t2_cols = gr.Slider(40, 280, value=120, step=10, label="Character columns — this is the most important control")
-                t2_custom_cols = gr.Number(value=0, label="Custom columns (power user — set >0 to unclamp/remove 280 limit)", minimum=10, maximum=2000, step=10)
 
                 with gr.Row():
-                    t2_time = gr.Number(value=5.0, label="Set Preview Point (seconds)", precision=2)
+                    t2_time = gr.Number(value=5.0, label="Time in seconds", precision=2)
                     t2_frame_btn = gr.Button("Show this frame", scale=1)
-
-                gr.Markdown("**Tip:** Use the controls below for frame numbers or video scrubber. The preview/save will pick the most specific (frame > scrub > seconds). Probe to see the video's fps and duration.")
-                t2_info = gr.Textbox(label="Video info (fps / duration / frames)", interactive=False, value="Click 'Probe video' after selecting a clip to see fps etc.")
-                with gr.Row():
-                    t2_scrub = gr.Slider(0, 100, value=0, step=0.5, label="Scrub position (0-100 % of video)")
-                    t2_frame = gr.Number(value=0, label="Frame number (0 = ignore, use seconds/scrub)")
-                    t2_probe_btn = gr.Button("Probe video info (fps, duration)", scale=1)
 
                 with gr.Row():
                     t2_orig = gr.Image(label="Original (small)", scale=1)
@@ -975,50 +868,22 @@ def build_ui():
 
                 t2_preview_btn.click(_preview_widths, [t2_video, t2_local, t2_cols, t2_time], t2_previews)
 
-                def _do_preview(video, local, cols, time, frame_num, scrub):
+                def _do_preview(video, local, cols, time):
                     vp = local or (video.name if video else None)
                     if not vp:
                         raise gr.Error("Provide a video")
-                    # Probe for accurate conversion
-                    cap = cv2.VideoCapture(vp)
-                    fps = cap.get(cv2.CAP_PROP_FPS) or 24.0
-                    tot_f = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-                    cap.release()
-                    dur = tot_f / fps if tot_f > 0 else 0.0
-                    eff = float(time or 0)
-                    if frame_num and float(frame_num) > 0:
-                        eff = float(frame_num) / fps
-                    elif scrub and float(scrub) > 0:
-                        eff = (float(scrub) / 100.0) * dur
-                    eff = max(0.0, eff)
-                    g, b = get_specific_frame(vp, eff, int(cols), max(1, round(int(cols) / 2.5)))
+                    g, b = get_specific_frame(vp, float(time or 5), int(cols), max(1, round(int(cols) / 2.5)))
                     m = AsciiMapper()
                     vis = render_ascii_frame_image(g, b, m, "colored letters", scale=5, use_glyphs=True)
                     block = "\n".join("".join(row) for row in get_char_matrix(g, m))
                     orig = cv2.cvtColor(cv2.resize(b, (320, 180)), cv2.COLOR_BGR2RGB)
                     return orig, vis, block
 
-                t2_frame_btn.click(_do_preview, [t2_video, t2_local, t2_cols, t2_time, t2_frame, t2_scrub], [t2_orig, t2_ascii_vis, t2_ascii_text])
-
-                def _probe_info(video, local):
-                    vp = local or (video.name if video else None)
-                    if not vp:
-                        return "Select a video first, then probe."
-                    try:
-                        cap = cv2.VideoCapture(vp)
-                        fps = cap.get(cv2.CAP_PROP_FPS) or 24.0
-                        tot = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-                        cap.release()
-                        dur = tot / fps if tot > 0 else 0
-                        return f"FPS: {fps:.2f} | Duration: {dur:.1f}s | Total frames: {tot} | Use frame number or scrub % for precise preview point."
-                    except Exception as e:
-                        return f"Could not probe: {e}"
-
-                t2_probe_btn.click(_probe_info, [t2_video, t2_local], t2_info)
+                t2_frame_btn.click(_do_preview, [t2_video, t2_local, t2_cols, t2_time], [t2_orig, t2_ascii_vis, t2_ascii_text])
 
                 t2_btn.click(
                     fn=make_ascii_art,
-                    inputs=[t2_video, t2_local, workspace, t2_cols, t2_custom_cols, t2_time, t2_frame, t2_scrub, t2_save_text, t2_save_png],
+                    inputs=[t2_video, t2_local, workspace, t2_cols, t2_time, t2_save_text, t2_save_png],
                     outputs=[t2_status, t2_out_txt, t2_out_png, t2_orig, t2_ascii_vis, t2_art_folder]
                 )
 
@@ -1030,12 +895,9 @@ def build_ui():
 
                 with gr.Row():
                     t3_video = gr.File(label="Upload video", file_types=["video"], scale=2)
-                    t3_local = gr.Textbox(label="Or local path", placeholder="C:\\Videos\\longclip.mp4", scale=2)
-                    t3_local_browse = gr.Button("Browse file...", size="sm", scale=1)
-                t3_local_browse.click(fn=browse_file, inputs=[t3_local], outputs=[t3_local])
+                    t3_local = gr.Textbox(label="Or local path", placeholder="C:\\Videos\\longclip.mp4", scale=3)
 
-                t3_cols = gr.Slider(80, 280, value=160, step=10, label="Character columns (preview different values below before rendering the full thing)")
-                t3_custom_cols = gr.Number(value=0, label="Custom columns (power user — set >0 to unclamp/remove 280 limit)", minimum=10, maximum=2000, step=10)
+                t3_cols = gr.Slider(80, 400, value=160, step=10, label="Character columns (preview different values below before rendering the full thing)")
 
                 t3_style = gr.Radio(
                     ["Classic letters", "Colored letters", "Smooth colored blocks (no letters)"],
@@ -1075,7 +937,7 @@ def build_ui():
 
                 t3_btn.click(
                     fn=create_asciiline_clip,
-                    inputs=[t3_video, t3_local, workspace, t3_cols, t3_custom_cols, t3_style, t3_scale, t3_audio, t3_transparent],
+                    inputs=[t3_video, t3_local, workspace, t3_cols, t3_style, t3_scale, t3_audio, t3_transparent],
                     outputs=[t3_status, t3_video_out, t3_clip_folder]
                 )
 
@@ -1091,36 +953,21 @@ def build_ui():
                 with gr.Row():
                     t4_video = gr.File(label="Video (upload or use path below)", file_types=["video"], visible=True)
                     t4_local = gr.Textbox(label="Local video path", visible=True)
-                    t4_local_browse = gr.Button("Browse file...", size="sm", visible=True)
                     t4_folder = gr.Textbox(label="Folder path", visible=False)
-                    t4_folder_browse = gr.Button("Browse folder...", size="sm", visible=False)
                     t4_playlist = gr.Textbox(label="playlist.json path", visible=False)
-                    t4_playlist_browse = gr.Button("Browse file...", size="sm", visible=False)
 
                 def _toggle_source(choice):
-                    is_single = (choice == "Single video")
-                    is_folder = (choice == "Folder of videos")
-                    is_pl = (choice == "Playlist JSON")
                     return {
-                        t4_video: gr.update(visible=is_single),
-                        t4_local: gr.update(visible=is_single),
-                        t4_local_browse: gr.update(visible=is_single),
-                        t4_folder: gr.update(visible=is_folder),
-                        t4_folder_browse: gr.update(visible=is_folder),
-                        t4_playlist: gr.update(visible=is_pl),
-                        t4_playlist_browse: gr.update(visible=is_pl),
+                        t4_video: gr.update(visible=(choice == "Single video")),
+                        t4_local: gr.update(visible=(choice == "Single video")),
+                        t4_folder: gr.update(visible=(choice == "Folder of videos")),
+                        t4_playlist: gr.update(visible=(choice == "Playlist JSON")),
                     }
 
-                t4_source.change(_toggle_source, t4_source, [t4_video, t4_local, t4_local_browse, t4_folder, t4_folder_browse, t4_playlist, t4_playlist_browse])
-
-                # Wire browses for tab 4 (defined after the components)
-                t4_local_browse.click(fn=browse_file, inputs=[t4_local], outputs=[t4_local])
-                t4_folder_browse.click(fn=browse_directory, inputs=[t4_folder], outputs=[t4_folder])
-                t4_playlist_browse.click(fn=browse_file, inputs=[t4_playlist], outputs=[t4_playlist])
+                t4_source.change(_toggle_source, t4_source, [t4_video, t4_local, t4_folder, t4_playlist])
 
                 with gr.Row():
-                    t4_cols = gr.Slider(80, 280, value=200, step=10, label="Character columns")
-                    t4_custom_cols = gr.Number(value=0, label="Custom (power user, 0=use slider)", minimum=10, maximum=2000, step=10)
+                    t4_cols = gr.Slider(80, 400, value=200, step=10, label="Character columns")
                     t4_mode = gr.Slider(1, 5, value=3, step=1, label="Color mode (1=B&W ... 5=16M colors)")
                     t4_pixel = gr.Checkbox(False, label="Pixel mode (colored blocks instead of letters)")
 
@@ -1146,7 +993,7 @@ def build_ui():
 
                 t4_launch.click(
                     fn=launch_browser_player,
-                    inputs=[t4_source, t4_local, t4_folder, t4_playlist, t4_cols, t4_custom_cols, t4_mode, t4_pixel, t4_vol, t4_loop, t4_port, workspace, server_state],
+                    inputs=[t4_source, t4_local, t4_folder, t4_playlist, t4_cols, t4_mode, t4_pixel, t4_vol, t4_loop, t4_port, workspace, server_state],
                     outputs=[t4_status, t4_url, server_state]
                 ).then(_update_link, t4_url, gr.HTML())
 
