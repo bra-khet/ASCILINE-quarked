@@ -84,6 +84,41 @@ def load_windows_root() -> str:
 
 WINDOWS_ROOT = load_windows_root()
 
+# --- Robust workspace/output path resolution (used by ALL tabs + services) ---
+# BUG FIX: path resolution conflict (relative workspace string vs absolute from WINDOWS_ROOT or CWD)
+# Fix: single _resolve_output_base that always anchors relative workspaces to WINDOWS_ROOT (the persisted "env" from .windows_cwd.txt) when set, or CWD; absolute workspaces used verbatim. _display_job_dir preserves the exact user-provided workspace string (keeps short "asciline_outputs/..." in UIs). make_job_dir mkdirs via resolver but returns display form for consistency with prior working behavior.
+# Sync: make_job_dir (creation), open_in_explorer (opens), launch_browser_player (_uploads staging), transcribe_for_llm (was the crashing site), plus Tab2/Tab3/Tab4 callers via shared make_job_dir.
+def _resolve_output_base(workspace: str) -> Path:
+    """Resolve the workspace value (relative default or user absolute custom path) to a real absolute directory on disk.
+    Honors the WINDOWS_ROOT (absolute repo path) to anchor any relative workspace so gradio/venv/CWD oddities or
+    absolute local paths for custom locations never cause 'not in subpath' or 'relative vs absolute' errors.
+    Ensures the base exists. This is now the only place that decides the real FS root for outputs.
+    """
+    ws = Path(str(workspace or "asciline_outputs").strip())
+    if ws.is_absolute():
+        base = ws
+    else:
+        if WINDOWS_ROOT:
+            base = Path(WINDOWS_ROOT) / ws
+        else:
+            base = Path.cwd() / ws
+    base = base.resolve()
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def _display_job_dir(workspace: str, category: str, stem: str, tag: str) -> Path:
+    """Build the job dir Path *using the literal workspace string the user sees/configures*.
+    Returns e.g. Path('asciline_outputs')/llm_transcripts/... (relative form) or an absolute if user
+    put an absolute in the workspace box. This string form is what gets shown in result textboxes
+    and markdowns (keeps UI familiar). The real creation is guaranteed by resolver.
+    """
+    ws = Path(str(workspace or "asciline_outputs").strip())
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_tag = "".join(c for c in tag if c.isalnum() or c in "-_")[:40]
+    return ws / category / f"{stem}_{safe_tag}_{ts}"
+
+
 # === ENGINE REUSE (MANDATORY) ===
 # We import and use these for EVERY frame operation to guarantee identical results
 # to the rest of the ASCILINE tools (terminal player, web server, previous pipelines).
@@ -216,10 +251,17 @@ def get_specific_frame(video_path: str, time_sec: float, cols: int, rows: int) -
 
 def make_job_dir(workspace: str, category: str, stem: str, tag: str) -> Path:
     """Create a nicely named, timestamped output folder so files are trivial to organize and find later."""
-    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    safe_tag = "".join(c for c in tag if c.isalnum() or c in "-_")[:40]
-    out_dir = Path(workspace) / category / f"{stem}_{safe_tag}_{ts}"
-    out_dir.mkdir(parents=True, exist_ok=True)
+    # BUG FIX: path resolution conflict (relative workspace string vs absolute from WINDOWS_ROOT or CWD)
+    # Fix: mkdir via _resolve_output_base (single truth, anchors correctly for rel workspaces + absolute custom paths); return the display form (from _display_job_dir) so UI shows exactly the workspace string user configured (short relative or their full abs) -- same pattern Tab3 always used.
+    # Sync: _resolve_output_base, _display_job_dir, open_in_explorer, launch_browser_player, transcribe_for_llm + other tabs.
+    # Display form keeps user's workspace prefix exactly (e.g. relative 'asciline_outputs/...' or absolute they typed)
+    out_dir = _display_job_dir(workspace, category, stem, tag)
+    # Actual FS create always uses resolver so it succeeds and lands in right place regardless of CWD or absolute env path on third tab etc.
+    # (recompute cat/named from the out_dir to avoid any relative/absolute .relative_to here)
+    cat_part = out_dir.parts[-2]
+    named_part = out_dir.name
+    actual = _resolve_output_base(workspace) / cat_part / named_part
+    actual.mkdir(parents=True, exist_ok=True)
     return out_dir
 
 
@@ -231,10 +273,15 @@ def open_in_explorer(path: str):
     This fixes 'Open folder' not working when the process CWD is a venv-relative path on Windows.
     Falls back to os.startfile on Windows for best Explorer integration.
     """
+    # BUG FIX: path resolution conflict (relative workspace string vs absolute from WINDOWS_ROOT or CWD)
+    # Fix: delegate relative resolution to same anchoring rule as _resolve_output_base (and make_job_dir) so opens of job folders from Tab1 (after fix) and other tabs + workspace button always target the identical place the files were written to. No more dual bases.
+    # Sync: _resolve_output_base, make_job_dir, launch_browser_player, all tab fns returning folders.
     p = Path(path)
     if not p.is_absolute():
-        root = Path(WINDOWS_ROOT) if WINDOWS_ROOT else Path.cwd().resolve()
-        p = (root / p).resolve()
+        if WINDOWS_ROOT:
+            p = (Path(WINDOWS_ROOT) / p).resolve()
+        else:
+            p = (Path.cwd().resolve() / p).resolve()
     if not p.exists():
         p = p.parent
     if p.exists():
@@ -477,10 +524,12 @@ def transcribe_for_llm(
     progress(1.0, desc="Done!")
 
     # Build friendly result UI
-    rel_dir = str(job_dir.relative_to(Path(workspace).resolve())) if Path(workspace).exists() else str(job_dir)
+    # BUG FIX: path resolution conflict (relative workspace string vs absolute from WINDOWS_ROOT or CWD)
+    # Fix: removed the fragile .relative_to entirely (root cause of the ValueError on 'asciline_outputs\\llm... ' not in subpath of resolved abs); now uses identical simple `{job_dir}` pattern and str(job_dir) return as the known-working create_asciiline_clip (Tab 3). All resolution is handled up-front in make_job_dir + shared helpers so first tab (and others) never conflict with absolute env paths or CWD.
+    # Sync: make_job_dir, _resolve_output_base, _display_job_dir, open_in_explorer, launch_browser_player.
     md = f"""## ✅ Transcription complete
 
-**Saved in:** `{rel_dir}`
+**Output folder:** `{job_dir}`
 
 - Main output: **{primary_path.name}** ({human_size(primary_path.stat().st_size) if primary_path and primary_path.exists() else "ready"})
 - All files are plain text or standard JSON — easy to open, search, git, or feed to any LLM.
@@ -786,7 +835,11 @@ def launch_browser_player(
         vp = Path(video_path)
         if not vp.exists():
             # If it was a temp upload, copy it to workspace so the server can use it reliably
-            stable_video = Path(workspace) / "_uploads" / vp.name
+            # BUG FIX: path resolution conflict (relative workspace string vs absolute from WINDOWS_ROOT or CWD)
+            # Fix: use _resolve_output_base for staging dir (exactly like job dirs); prevents uploads landing in wrong tree when absolute local path or env mapping is active for other tabs.
+            # Sync: _resolve_output_base, make_job_dir.
+            base = _resolve_output_base(workspace)
+            stable_video = base / "_uploads" / vp.name
             stable_video.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(vp, stable_video)
             vp = stable_video

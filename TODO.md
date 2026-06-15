@@ -218,6 +218,9 @@ Extensibility cost is low for input (transcode or small wrapper). For new output
 
 ---
 
+## Recent fixes (post-Sprint 2)
+- Path resolution in gradio_app.py: fixed crash in Tab 1 (transcribe_for_llm) when using default relative workspace + WINDOWS_ROOT absolute (from .windows_cwd.txt); centralized resolver so *all* tabs (incl. the working Tab 3 ASCILINE Clips) + browser player service + open-folder use identical anchoring/fallback and never conflict on relative vs absolute job dirs. (See BUG FIX comments in gradio_app.py.)
+
 ## How to Work This List (Sprint Discipline Reminder)
 - State a **one-sentence sprint contract** at the start of the exchange naming the *exact* scope.
 - Do **one** well-defined item (or sub-item) per exchange.
