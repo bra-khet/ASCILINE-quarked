@@ -267,6 +267,11 @@ ffmpeg -y -loglevel error -f lavfi -i "mandelbrot=size=640x480:rate=24:end_scale
 ffmpeg -y -loglevel error -f lavfi -i "life=size=320x240:rate=24:mold=10:ratio=0.1:death_color=#101030:life_color=#30ff80" -t 5 -pix_fmt yuv420p videos/life.mp4
 ffmpeg -y -loglevel error -f lavfi -i "smptebars=size=640x360:rate=24" -vf "drawtext=text='ASCILINE':fontsize=60:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2:box=1:boxcolor=black@0.5" -t 4 -pix_fmt yuv420p videos/bars.mp4
 ```
+Alternatively, run this command on Windows for the fourth video to bypass fontfile errors:
+
+```powershell
+ffmpeg -y -loglevel error -f lavfi -i "smptebars=size=640x360:rate=24" -vf "drawtext=fontfile='C\:/Windows/Fonts/arial.ttf':text='ASCILINE':fontsize=60:fontcolor=white:x=(w-text_w)/2:y=(h-text_h)/2:box=1:boxcolor=black@0.5" -t 4 -pix_fmt yuv420p videos/bars.mp4
+```
 
 You now have `test.mp4`, `mandel.mp4`, `life.mp4`, `bars.mp4` — perfect for testing every mode.
 

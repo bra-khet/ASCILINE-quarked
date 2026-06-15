@@ -27,6 +27,7 @@ experiments/*.png
 
 # Personal notes
 mynotes.txt
+HOWTO.md
 
 # Old versions
 *-previous-ver-*
@@ -39,6 +40,7 @@ tmp*/
 
 # GUI and experiment outputs (user-generated, personal data, large)
 asciline_outputs/
+videos/*
 # Windows local path mapping (contains full filesystem path - privacy)
 .windows_cwd.txt
 *.log
